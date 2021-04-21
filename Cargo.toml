@@ -1,11 +1,20 @@
 [package]
-name = "AC7ION"
+name = "ac7ion"
 version = "0.1.0"
 authors = ["OnikenX <OnikenX@pm.me>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+#[[lib]]
+#name = "ac7tion"
+#path = "src/server_lib.rs"
+
+#[[lib]]
+#name = "ac7tion_client"
+#path = "src/client_lib.rs"
 
 [dependencies]
 egg-mode = "*"
 dotenv = "*"
+futures = "*"
+async-std = "*"
