@@ -1,26 +1,18 @@
-use std::{
-    error::Error,
-};
 use std::collections::VecDeque;
-use std::hash::Hasher;
+use std::error::Error;
+use std::net::SocketAddr;
 use std::ops::Add;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
+use tokio::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::{Receiver, Sender, RecvError};
 
-use argh::FromArgs;
 use egg_mode::stream::{FilterLevel, StreamMessage};
 use egg_mode::tweet::Tweet;
-use egg_mode::user::TwitterUser;
-use futures::future::err;
-use futures::prelude::*;
 use futures::TryStreamExt;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::sync::{mpsc, oneshot};
-use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::task::JoinHandle;
-use tokio::time::sleep;
+use tokio::net::{TcpListener, TcpStream};
 
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -63,6 +55,8 @@ mod test {
     use std::ops::Add;
     use std::path::Path;
 
+    use tokio_rustls::rustls::internal::pemfile::rsa_private_keys;
+
     use crate::{CERTIFICATE, PRIVATE_KEY, shared};
     use crate::common_tls::acceptor_creation;
     use crate::shared::TWEETS_FOLDER;
@@ -79,6 +73,14 @@ mod test {
     }
 
     #[test]
+    fn test_rsa() {
+        let file = std::fs::File::open("private.key").unwrap();
+        let rd = &mut std::io::BufReader::new(file);
+        let vector = tokio_rustls::rustls::internal::pemfile::rsa_private_keys(rd).unwrap();
+        assert!(vector.len() > 0);
+    }
+
+    #[test]
     fn buffer_read_keys() {
         let value = &mut BufReader::new(std::fs::File::open(Path::new(PRIVATE_KEY)).unwrap());
         let mut string: String = String::new();
@@ -90,8 +92,8 @@ mod test {
 #[tokio::main]
 async fn main() {
     // let options: CmdLineOptions = argh::from_env();
-    let (tweet_request_sender, tweet_request_receiver) = mpsc::channel::<TweetRequest>(10);
-    let (tweet_sender, tweet_receiver) = mpsc::channel::<Tweet>(10);
+    let (tweet_request_sender, tweet_request_receiver) = mpsc::channel::<TweetRequest>();
+    let (tweet_sender, tweet_receiver) = mpsc::channel::<Tweet>();
 
     let tweets_manager_task = tokio::spawn(async move {
         match tweets_manager(tweet_receiver, tweet_request_receiver).await {
@@ -120,7 +122,7 @@ async fn main() {
             Err(e) => {
                 eprintln!("Returned from receive_tweets, returned error: {}", e);
             }
-        }
+        };
     });
     tokio::try_join!(tweets_manager_task, networking_server_client_task, receive_tweets_task);
 }
@@ -128,7 +130,7 @@ async fn main() {
 /// recives tweets from the twitter api
 async fn receive_tweets(tweet_sender: Sender<Tweet>) -> Result<(), Box<dyn Error>> {
     let config = common_twitter::Config::load().await;
-
+    let tweet_sender = Arc::new(std::sync::Mutex::new(tweet_sender));
     let stream = egg_mode::stream::filter()
         .track(&["#DOGECOIN"])
         .filter_level(FilterLevel::Low)
@@ -136,15 +138,14 @@ async fn receive_tweets(tweet_sender: Sender<Tweet>) -> Result<(), Box<dyn Error
         .start(&config.token)
         .try_for_each(|m| {
             if let StreamMessage::Tweet(tweet) = m {
-                println!("tweet received from twitter...");
-                tweet_sender.send(tweet.clone());
+                tweet_sender.lock().unwrap().send(tweet.clone());
             } else {
                 println!("Not an tweet: {:?}", &m);
             }
             futures::future::ok(())
         });
     if let Err(e) = stream.await {
-        println!("Stream error: {:?}", &e);
+        println!("Stream error: {:?}", e);
         println!("Reconnecting...")
     };
     Ok(())
@@ -184,12 +185,12 @@ async fn tweets_manager(mut tweet_receiver: Receiver<Tweet>, mut tweet_request_r
         println!("Inited respond_to_requests....");
         let tweets_buffer = tweets_buffer_cloned;
         loop {
-            match tweet_request_receiver.recv().await {
-                None => {
-                    eprintln!("Channel tweet_request_receiver is closed for some reason...");
+            match tweet_request_receiver.recv() {
+                Err(e) => {
+                    eprintln!("Channel tweet_request_receiver is closed: {}", e);
                     break;
                 }
-                Some((mut n_tweets, mut sender)) => {
+                Ok((mut n_tweets, mut sender)) => {
                     if n_tweets > TWEETS_BUFFER_LIMIT as i32 {
                         n_tweets = TWEETS_BUFFER_LIMIT as i32;
                     };
@@ -198,13 +199,16 @@ async fn tweets_manager(mut tweet_receiver: Receiver<Tweet>, mut tweet_request_r
                         if guard_vec.len() < n_tweets as usize {
                             n_tweets = guard_vec.len() as i32;
                         }
-
+                        sender.send(String::from("["));
                         for (n, item) in guard_vec.iter().enumerate() {
-                            sender.send(String::from(item.clone()));
+                            sender.send(item.clone());
                             if n + 1 >= n_tweets as usize {
                                 break;
-                            };
+                            }else{
+                                sender.send(String::from(","));
+                            }
                         };
+                        sender.send(String::from("]"));
                     };
                 }
             }
@@ -218,17 +222,16 @@ async fn tweets_manager(mut tweet_receiver: Receiver<Tweet>, mut tweet_request_r
         println!("Inited process_tweets!");
         let tweets_buffer = tweets_buffer_cloned;
         loop {
-            match tweet_receiver.recv().await {
-                None => {
-                    eprintln!("tweet_receiver is closed...");
+            match tweet_receiver.recv() {
+                Err(e) => {
+                    eprintln!("tweet_receiver is closed: {}", e);
                     break;
                 }
-                Some(tweet) => {
-                    println!("Tweet received to processor : ");
+                Ok(tweet) => {
+                    eprint!("+t");
                     let tweet_json = serde_json::to_string(&TweetSerializable::from(tweet)).unwrap();
                     {//protects the lock
                         let mut guard_vec = tweets_buffer.lock();
-                        dbg!(&tweet_json);
                         guard_vec.push_back(tweet_json);
                         if guard_vec.len() > TWEETS_BUFFER_LIMIT {
                             guard_vec.pop_front();
@@ -236,18 +239,14 @@ async fn tweets_manager(mut tweet_receiver: Receiver<Tweet>, mut tweet_request_r
                     }
                 }
             }
-            println!("Saiu do receiver");
         }
     });
     tokio::join!(process_tweets, respond_to_requests);
     Ok(())
 }
 
-/// tweets_manager helper: saves tweets to disk manages them
+/// tweets_manager helper: saves tweets to disk manages them todo
 async fn manages_tweets_on_disk() {}
-
-/// tweets_manager helper: sends the tweets from the server to the message sender to be received by the client
-async fn send_tweets_as_messages() {}
 
 /// Function responsible for talking with the client lib
 async fn send_messages_tls(tweet_requester: mpsc::Sender<TweetRequest>) -> Result<(), Box<dyn Error>> {
@@ -278,9 +277,17 @@ async fn send_messages_tcp(tweet_requester: mpsc::Sender<TweetRequest>) -> Resul
     let tcp_stream = TcpListener::bind(LISTENING_ON_SERVER_ADDR.to_string().add(":").add(LISTENING_ON_SERVER_PORT)).await.unwrap();
 
     loop {
-        let (connection, addr) = tcp_stream.accept().await?;
-        let tweet_requester = tweet_requester.clone();
-        tokio::spawn(async move {});
+        match tcp_stream.accept().await {
+            Ok((stream, addr)) => {
+                let tweet_requester = tweet_requester.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = send_messages_tcp_response(stream, tweet_requester).await {
+                        eprintln!("send_messages_tcp: {}", e);
+                    }
+                });
+            }
+            Err(e) => { eprintln!("send_messages_tcp: {}", e); }
+        }
     }
 }
 
@@ -290,12 +297,12 @@ async fn send_messages_tcp_response(mut stream: TcpStream, tweet_requester: mpsc
     let n_tweets = stream.read_i32().await?;
 
     //create a channel to receive tweets and ask for them
-    let (mut sx_t, mut rx_t) = mpsc::channel::<String>(100);
-    tweet_requester.send((n_tweets, sx_t)).await?;
+    let (mut sx_t, mut rx_t) = mpsc::channel::<String>();
+    let _ = tweet_requester.send((n_tweets, sx_t))?;
 
-    //receives tweets and sends them to the client
-    while let Some(tweet_json) = rx_t.recv().await {
-        stream.write(tweet_json.as_bytes());
+    //receives shards of the json object
+    while let Ok(tweet_json_shard) = rx_t.recv() {
+        let _ = stream.write(tweet_json_shard.as_bytes()).await?;
     }
     Ok(())
 }
@@ -307,12 +314,23 @@ async fn send_messages_tls_response(mut stream: tokio_rustls::server::TlsStream<
     let n_tweets = stream.read_i32().await?;
 
     //create a channel to receive tweets and ask for them
-    let (mut sx_t, mut rx_t) = mpsc::channel::<String>(100);
-    tweet_requester.send((n_tweets, sx_t)).await?;
+    let (mut sx_t, mut rx_t) = mpsc::channel::<String>();
+    tweet_requester.send((n_tweets, sx_t))?;
+
+    let rx_t = Arc::new(Mutex::new(rx_t));
+
 
     //receives tweets and sends them to the client
-    while let Some(tweet_json) = rx_t.recv().await {
-        stream.write(tweet_json.as_bytes());
+    loop {
+        let value = {
+            rx_t.lock().unwrap().recv()
+        };
+        match value{
+            Ok(tweet_json) => {
+                let _ = stream.write(tweet_json.as_bytes()).await?;
+            }
+            Err(_) => {break;}
+        }
     }
     let _ = stream.flush().await;
     Ok(())

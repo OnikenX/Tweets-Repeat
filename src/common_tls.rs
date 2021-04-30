@@ -37,7 +37,7 @@ fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
 }
 
 fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
-    let rd = &mut BufReader::new(File::open(path)?);
+    let  rd = &mut BufReader::new(File::open(path)?);
     rsa_private_keys(rd)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
 }
