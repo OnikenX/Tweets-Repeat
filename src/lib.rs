@@ -20,7 +20,7 @@ mod tests {
 
     #[test]
     fn connection_test() {
-        let con = tokio::runtime::Runtime::new().unwrap().block_on(async { connection_tcp_unwrapped(5).await });
+        let con = tokio::runtime::Runtime::new().unwrap().block_on(async { connection_tcp(5).await });
         con.unwrap();
     }
 }
@@ -59,8 +59,5 @@ async fn connection_tcp(n_tweets: i32) -> Result<String, Box<dyn Error>> {
     let _ = stream.write_i32(n_tweets).await?;
     let mut json_tweets = String::new();
     let _ = stream.read_to_string(&mut json_tweets).await?;
-    dbg!(&json_tweets);
-    let json: Vec<TweetSerializable> = serde_json::from_str(&json_tweets[..])?;
-    dbg!(&json);
     Ok(json_tweets)
 }
