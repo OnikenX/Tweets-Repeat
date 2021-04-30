@@ -93,3 +93,4 @@ fabric.properties
 src/consumer_secret
 src/consumer_key
 .env
+/tweets_history/
