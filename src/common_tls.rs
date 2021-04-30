@@ -12,7 +12,7 @@ use tokio_rustls::TlsAcceptor;
 use std::error::Error;
 
 
-pub fn acceptor_creation(addr : &Path, cert : &Path, key : &Path, ) -> Result<TlsAcceptor, Box<dyn Error>>{
+pub fn acceptor_creation(addr : &String, cert : &Path, key : &Path, ) -> Result<TlsAcceptor, Box<dyn Error>>{
     //setup dos argumentos recebidos
     let addr = addr
         .to_socket_addrs()?
@@ -20,11 +20,12 @@ pub fn acceptor_creation(addr : &Path, cert : &Path, key : &Path, ) -> Result<Tl
         .ok_or_else(|| io::Error::from(io::ErrorKind::AddrNotAvailable))?;
     let certs = load_certs(&cert)?;
     let mut keys = load_keys(&key)?;
+    assert!(keys.len() > 0);
 
     //setup da configuração tls
     let mut config = ServerConfig::new(NoClientAuth::new());
 
-    config.set_single_cert(certs, keys.remove(0))
+    config.set_single_cert(certs, keys.pop().ok_or("None")?)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidInput, err))?;
 
     Ok(TlsAcceptor::from(Arc::new(config)))
@@ -36,7 +37,8 @@ fn load_certs(path: &Path) -> io::Result<Vec<Certificate>> {
 }
 
 fn load_keys(path: &Path) -> io::Result<Vec<PrivateKey>> {
-    rsa_private_keys(&mut BufReader::new(File::open(path)?))
+    let rd = &mut BufReader::new(File::open(path)?);
+    rsa_private_keys(rd)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid key"))
 }
 

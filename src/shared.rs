@@ -18,27 +18,36 @@ mod test {
 }
 
 
-pub static LISTENING_ON_SERVER: &str = "/ip4/0.0.0.0/tcp/5556";
-// static LISTNING_ON : &str = "/ip6/::/tcp/5556";
+// pub static LISTENING_ON_SERVER_MULTIADDR: &str = "/ip4/"+LISTENING_ON_SERVER_ADDR+"/tcp/"+LISTENING_ON_SERVER_PORT;
+pub static LISTENING_ON_SERVER_ADDR: &str = "0.0.0.0";
+pub static LISTENING_ON_SERVER_PORT: &str = "5556";
+// pub static LISTENING_ON_SERVER: &str = LISTENING_ON_SERVER_ADDR.to_string().add(":").add(LISTENING_ON_SERVER_PORT).as_str();
+
+pub static SERVER_ADDR: &str = "127.0.0.1";
+// pub static SERVER_MULTIADDR: &str = "/ip4/"+SERVER_ADDR+"/tcp/"+LISTENING_ON_SERVER_PORT;
+// pub static LISTENING_ON_CLIENT: &str = "/ip4/"+LISTENING_ON_CLIENT_ADDR+"/tcp/"+LISTENING_ON_CLIENT_PORT;
+pub static LISTENING_ON_CLIENT_ADDR: &str = "0.0.0.0";
+pub static LISTENING_ON_CLIENT_PORT: &str = "0";
+
 
 pub static TWEETS_FOLDER: &str = "tweets_history";
-
-
-// static SERVER_MULTIADDR: &str = "/ip6/::1/tcp/5556";
-pub static SERVER_MULTIADDR: &str = "/ip4/127.0.0.1/tcp/5556";
-pub static LISTENING_ON_CLIENT: &str = "/ip4/0.0.0.0/tcp/0";
 
 use serde::{Serialize, Deserialize};
 use egg_mode::tweet::Tweet;
 use egg_mode::user::TwitterUser;
+use std::ops::Add;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct TweetSerializable {
+    // display
     pub user_name: String,
+    // @ of user
     pub user_screen_name: String,
+    // content of the tweet
     pub text: String,
     pub favorite_count: i32,
     pub retweet_count: i32,
+    // has a link to sensible content
     pub possibly_sensible: bool,
     pub created_at: String,
 }
@@ -57,9 +66,9 @@ impl TweetSerializable {
                 user_name = String::new();
                 user_screen_name = String::new();
             }
-            Some(twitterUser) => {
-                user_name = String::from(twitterUser.name.clone());
-                user_screen_name = String::from(twitterUser.screen_name.clone());
+            Some (twitter_user) => {
+                user_name = String::from(twitter_user.name.clone());
+                user_screen_name = String::from(twitter_user.screen_name.clone());
             }
         };
         TweetSerializable { retweet_count, favorite_count, text, user_screen_name, user_name, possibly_sensible, created_at }

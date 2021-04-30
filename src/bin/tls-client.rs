@@ -3,7 +3,7 @@ use std::fs::File;
 use std::io;
 use std::io::BufReader;
 use std::net::ToSocketAddrs;
-use std::path::PathBuf;
+use std::path::{PathBuf, Path};
 use std::sync::Arc;
 use tokio::io::{copy, split, stdin as tokio_stdin, stdout as tokio_stdout, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -42,7 +42,7 @@ async fn main() -> io::Result<()> {
 
     let mut config = ClientConfig::new();
     if let Some(cafile) = &options.cafile {
-        let mut pem = BufReader::new(File::open(cafile)?);
+        let mut pem = BufReader::new(File::open(Path::new("AC7ION_certificate.crt"))?);
         config
             .root_store
             .add_pem_file(&mut pem)

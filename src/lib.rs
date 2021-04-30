@@ -43,7 +43,7 @@ use static_init::{dynamic};
 use std::sync::{Mutex, Arc, PoisonError, MutexGuard};
 use std::sync::mpsc::{channel, RecvError};
 
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
 use std::{io, thread, error};
 use async_std::{task};
 use egg_mode::tweet::Tweet;
@@ -67,6 +67,12 @@ use std::sync::mpsc::Receiver;
 use std::ptr::null;
 use std::error::Error;
 use std::cell::Cell;
+use tokio_rustls::{TlsConnector, TlsStream};
+use std::io::BufReader;
+use std::fs::{File, read_to_string};
+use std::path::Path;
+use tokio_rustls::webpki::DNSNameRef;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 
 // ######### ERRORS STRUCT ########
 
@@ -87,222 +93,72 @@ static RECEIVER: OnceCell<Mutex<Receiver<String>>> = OnceCell::new();
 
 // ########### shared functions #############
 
-// GAMEMAKER
-#[no_mangle]
-/// init_lib for gamemaker
-///
-/// This is a C like binding
-pub extern "cdecl" fn init_lib_gamemaker() -> libc::c_double {
-    f64::from(init_lib())
-}
-
-#[no_mangle]
-/// Gets an **double** and returns the double of that **double**
-///
-/// This is a C like binding
-pub extern "cdecl" fn foo(value: libc::c_double) -> libc::c_double {
-    2.0 * value
-}
-
-#[no_mangle]
-/// Gets a **string** and returns an *STRING **string** RECEIVED*
-///
-/// This is a C like binding
-pub extern "cdecl" fn bar(string_c: *const libc::c_char) -> *const libc::c_char {
-    match bar_assist(string_c) {
-        Ok(string) => { string }
-        Err(_) => { null() }
-    }
-}
 
 // general shared functions
 
 #[no_mangle]
-/// This function needs to be called to initialize the functionality of the lib
+/// Requests tweets from server
 ///
 /// This is a C like binding
-pub extern "cdecl" fn init_lib() -> libc::c_char {
-    if let None = RECEIVER.get() {
-        let (sx, rx) = channel();
-        RECEIVER.set(Mutex::new(rx));
-        match futures::executor::block_on(receive_messages_gossip(sx)) {
-            Ok(_) => { ReturnValues::Sucess as i8 }
-            Err(_) => { ReturnValues::ErrorOther as i8 }
-        }
-    } else {
-        eprintln!("Server can't be inited twice");
-        ReturnValues::ErrorOnceCellUsed as i8
-    }
+pub extern "cdecl" fn get_tweets(n_tweets: libc::c_double) -> *const libc::c_char {
+    get_tweets_assist(n_tweets as i32)
 }
 
-#[no_mangle]
-/// This is a C like binding
-pub extern "cdecl" fn gettweet() -> *const libc::c_char {
-    gettweet_asst_unwrapped()
-    // match gettweet_asst(){
-    //     Ok(ok) => {ok}
-    //     Err(_) => {null()}
-    // }
-}
-
-
-fn gettweet_asst_unwrapped() -> *const i8 {
-    if let None = RECEIVER.get() {
-        null() as *const i8
-    } else {
-        CString::new(RECEIVER.get().ok_or("RECEIVER returns None").unwrap().lock().unwrap().recv().unwrap()).unwrap().into_raw()
-    }
-}
-
-fn gettweet_asst() -> Result<*mut i8, Box<dyn Error>> {
+fn convert_string_to_c_char(source: String) -> Result<*const libc::c_char, Box<dyn Error>> {
     Ok(CString::new(RECEIVER.get().ok_or("None")?.lock()?.recv()?)?.into_raw())
 }
 
-// ######## RUST FUNCTIONS / helper ##################
-
-///  run this call to init the variables in the library, it will start a thread
-///
-/// # Returns
-///
-/// returns a value from the ReturnValues
-///
-/// Recives messages from a gossip instance of libp2p
-async fn receive_messages_gossip(sx: Sender<String>) -> Result<(), Box<dyn std::error::Error>> {
-    // Create a random PeerId
-    let local_key = identity::Keypair::generate_ed25519();
-    let local_peer_id = PeerId::from(local_key.public());
-    println!("Local peer id: {:?}", local_peer_id);
-
-    // Set up an encrypted TCP Transport over the Mplex and Yamux protocols
-    let transport = libp2p::development_transport(local_key.clone()).await?;
-
-    // Create a Gossipsub topic
-    let topic = Topic::new("test-net");
-
-    // Create a Swarm to manage peers and events
-    let mut swarm = {
-        // To content-address message, we can take the hash of message and use it as an ID.
-        let message_id_fn = |message: &GossipsubMessage| {
-            let mut s = DefaultHasher::new();
-            message.data.hash(&mut s);
-            MessageId::from(s.finish().to_string())
-        };
-
-        // Set a custom gossipsub
-        let gossipsub_config = gossipsub::GossipsubConfigBuilder::default()
-            .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
-            .validation_mode(ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message signing)
-            .message_id_fn(message_id_fn) // content-address messages. No two messages of the
-            // same content will be propagated.
-            .build()?;
-        // build a gossipsub network behaviour
-        let mut gossipsub: gossipsub::Gossipsub =
-            gossipsub::Gossipsub::new(MessageAuthenticity::Signed(local_key), gossipsub_config)?;
-
-        // subscribes to our topic
-        match gossipsub.subscribe(&topic) {
-            Ok(_) => {}
-            Err(_) => { return Err(Box::from("gossip subscription error")); }
-        }
-
-        // add an explicit peer if one was provided
-        if let Some(explicit) = std::env::args().nth(2) {
-            let explicit = explicit.clone();
-            match explicit.parse() {
-                Ok(id) => gossipsub.add_explicit_peer(&id),
-                Err(err) => println!("Failed to parse explicit peer id: {:?}", err),
-            }
-        }
-
-        // build the swarm
-        libp2p::Swarm::new(transport, gossipsub, local_peer_id)
-    };
-
-    // Listen on all interfaces and whatever port the OS assigns
-    swarm.listen_on("/ip6/::/tcp/0".parse()?)?;
-
-    // Reach out to another node if specified
-    // if let Some(to_dial) = std::env::args().nth(1) {
-    //     let dialing = to_dial.clone();
-    //     match to_dial.parse() {
-    //         Ok(to_dial) => match swarm.dial_addr(to_dial) {
-    //             Ok(_) => println!("Dialed {:?}", dialing),
-    //             Err(e) => println!("Dial {:?} failed: {:?}", dialing, e),
-    //         },
-    //         Err(err) => println!("Failed to parse address to dial: {:?}", err),
-    //     }
-    // }
-    swarm.dial_addr(shared::SERVER_MULTIADDR.parse().unwrap()).unwrap();
-
-    // Kick it off
-    // let mut listening = false;
-    task::block_on(future::poll_fn(move |cx: &mut Context<'_>| {
-        loop {
-            match swarm.poll_next_unpin(cx) {
-                Poll::Ready(Some(gossip_event)) => match gossip_event {
-                    GossipsubEvent::Message {
-                        propagation_source: peer_id,
-                        message_id: id,
-                        message,
-                    } => println!(
-                        "Got message: {} with id: {} from peer: {:?}",
-                        String::from_utf8_lossy(&message.data),
-                        id,
-                        peer_id
-                    ),
-                    _ => {}
-                },
-                Poll::Ready(None) | Poll::Pending => break,
-            }
-        }
-        // if !listening {
-        //     for addr in libp2p::Swarm::listeners(&swarm) {
-        //         println!("Listening on {:?}", addr);
-        //         listening = true;
-        //     }
-        // }
-        Poll::Pending
-    }))
-}
-
-
-fn bar_assist(string_c: *const libc::c_char) -> Result<*const libc::c_char, Box<dyn std::error::Error>> {
+fn convert_c_char_to_string(source: *const libc::c_char) -> String {
     let c_str: &CStr = unsafe { CStr::from_ptr(string_c) };
-    let str_slice: &str = c_str.to_str()?;
-    let return_string = format!("STRING \"{}\" RECEIVED", str_slice);
-    println!("{}", &return_string);
-    let c_str = CString::new(return_string)?;
-    Ok(c_str.into_raw())
+    //cloning the string just to be safe
+    String::from(c_str.to_str()?.clone())
 }
 
-// #[no_mangle]
-//  run this call to init the variables in the library, it will start a thread
-//
-// # Returns
-//
-// returns a value from the ReturnValues
-// pub extern "cdecl" fn init_lib() -> libc::c_char {
-//     static joinThread;
-//     if !IS_THREAD_INICIALIZED.as_ref() {
-//         if let None = THREAD_HANDLE.get() {
-//             let (sx, rx) = channel::<String>();
-//             match thread::Builder::new().spawn(move || receive_messages_gossip(sx)) {
-//                 Ok(handle) => {
-//                     joinThread = handle;
-//                     if !(matches!(THREAD_HANDLE.set(handle), Ok(())) && matches!(RECEIVER.set(rx), Ok(()))) {
-//                         return ReturnValues::ErrorOnceCellUsed as i8;
-//                     }
-//                 }
-//                 Err(e) => {
-//                     eprintln!("Error creating thread : {:?}", e);
-//                     return ReturnValues::ErrorThreadCreation as i8;
-//                 }
-//             }
-//         } else {
-//             return ReturnValues::ErrorOnceCellUsed as i8;
-//         }
-//     } else {
-//         return ReturnValues::ErrorInitLibUsed as i8;
-//     }
-//     ReturnValues::Sucess as i8
-// }
+///
+fn get_tweets_assist(n_tweets: i32) -> *const libc::c_char {
+    init_connection(n_tweets);
+    convert_string_to_c_char("".to_string()).unwrap_or_else(null())
+}
+
+// static configcell : OnceCell<Cell<tokio_rustls::rustls::ClientConfig>> = OnceCell::new();
+
+fn init_connection(n_tweets : i32) -> Vec<String>{
+
+    //address setting
+    let addr = (shared::SERVER_ADDR, shared::LISTENING_ON_SERVER_PORT)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
+
+    //configurations
+    let mut config = tokio_rustls::rustls::ClientConfig::new();
+    config
+        .root_store
+        .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+    let mut pem = BufReader::new(File::open(Path::new("AC7ION_certificate.crt"))?);
+
+    config
+        .root_store
+        .add_pem_file(&mut pem)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid cert"))?;
+
+    let connector = TlsConnector::from(Arc::new(config));
+    let stream = TcpStream::connect(&addr).await?;
+
+    let domain = DNSNameRef::try_from_ascii_str(&domain)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid dnsname"))?;
+
+
+    let mut stream = connector.connect(domain, stream).await?;
+
+    stream.write_i32(n_tweets);
+    stream.flush();
+
+    let tweets: Vec<String> = vec![];
+    let temp = String::new();
+
+    tweets
+
+
+}

@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 egg-mode = { git = 'https://github.com/egg-mode-rs/egg-mode', branch = 'v0.16' }
-tokio = {version = "1", features = ["full"]}
+tokio = {version = "1", features = ["full", "rt-multi-thread"]}
 libp2p = "0.37.1"
 yansi = "0.5.0"
 chrono = "0.4.19"
