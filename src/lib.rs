@@ -37,9 +37,28 @@ pub extern "cdecl" fn get_tweets(n_tweets: libc::c_double) -> *const libc::c_cha
     }
 }
 
+/// does the same as get_tweets but with the tweak that is wrapped
+pub extern "cdecl" fn get_tweets_wrapped(n_tweets: libc::c_double) -> *const libc::c_char {
+    match get_tweets_wrapped_helper(n_tweets as i32) {
+        Ok(json) => { json }
+        Err(_) => {null()}
+    }
+}
+
+
+
 fn get_tweets_helper(n_tweets: i32) -> Result<*const libc::c_char, Box<dyn Error>> {
     Ok(CString::new(tokio::runtime::Runtime::new()?.block_on(async move { connection_tcp(n_tweets).await })?)?.into_raw())
 }
+
+fn get_tweets_wrapped_helper(n_tweets: i32) -> Result<*const libc::c_char, Box<dyn Error>> {
+    let json = tokio::runtime::Runtime::new()?.block_on(async move { connection_tcp(n_tweets).await })?;
+    let mut wrapped_json = String::from("{\"tweets\":");
+    wrapped_json += json.as_ref();
+    wrapped_json += "}";
+    Ok(CString::new(json)?.into_raw())
+}
+
 
 async fn connection_tcp_unwrapped(n_tweets: i32) -> Result<String, Box<dyn Error>> {
     let mut stream = tokio::net::TcpStream::connect(SERVER_ADDR.to_string().add(":").add(LISTENING_ON_SERVER_PORT)).await.unwrap();
