@@ -9,7 +9,7 @@ use std::sync::mpsc::RecvError;
 
 use egg_mode::stream::{FilterLevel, StreamMessage};
 use egg_mode::tweet::Tweet;
-use futures::TryStreamExt;
+use futures::{Stream, StreamExt, TryStreamExt};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -132,46 +132,29 @@ async fn main() {
 
 /// recives tweets from the twitter api
 async fn receive_tweets(tweet_sender: Sender<Tweet>) -> Result<(), Box<dyn Error>> {
-    let (mut tx, rx) = std::sync::mpsc::channel();
-    let mut tx = Arc::new(parking_lot::Mutex::new(tx));
-    let mut rx = Arc::new(parking_lot::Mutex::new(rx));
-
-
     let config = common_twitter::Config::load().await;
-    let stream = egg_mode::stream::filter()
+    let mut stream = egg_mode::stream::filter()
         .track(&["#DOGECOIN"])
         .filter_level(FilterLevel::Low)
         // .language(&["en", "pt", "pt-pt", "pt-br", ])
-        .start(&config.token)
-        .try_for_each(move |m| {
-            if let StreamMessage::Tweet(tweet) = m {
-                println!("sending tweet");
-                tx.lock().send(tweet.clone());
-            } else {
-                eprintln!("Not an tweet: {:?}", &m);
+        .start(&config.token);
+
+    while let Some(stream_message) = stream.try_next().await? {
+        match stream_message {
+            StreamMessage::Ping => {}
+            StreamMessage::FriendList(_) => {}
+            StreamMessage::Tweet(tweet) => {
+                tweet_sender.send(tweet).await;
             }
-            futures::future::ok(())
-        });
-
-    //redirects tweets from twitter's stream to
-    let redirector_task = tokio::spawn(async move {
-        loop {
-            println!("on redirector");
-            let tweet = rx.lock().recv().unwrap();
-            tweet_sender.send(tweet).await;
-        };
-        ()
-    });
-
-    let stream_task = tokio::spawn(async move {
-        if let Err(e) = stream.await {
-            eprintln!("Stream error: {:?}", e);
-            eprintln!("Reconnecting...")
-        };
-        ()
-    });
-
-    let (stream_return, redirector_return) = tokio::join!(redirector_task, stream_task);
+            StreamMessage::Delete { .. } => {}
+            StreamMessage::ScrubGeo { .. } => {}
+            StreamMessage::StatusWithheld { .. } => {}
+            StreamMessage::UserWithheld { .. } => {}
+            StreamMessage::Disconnect(_, _) => {}
+            StreamMessage::Unknown(_) => {}
+        }
+    }
+    println!("No more tweets...");
     Ok(())
 }
 
@@ -200,7 +183,8 @@ async fn tweets_manager(mut tweet_receiver: Receiver<Tweet>, mut tweet_request_r
 
 
     // this buffer saves tweets on memory
-    let vec: VecDeque<String> = VecDeque::new();
+    let mut vec: VecDeque<String> = VecDeque::new();
+    vec.reserve(TWEETS_BUFFER_LIMIT);
     let tweets_buffer = Arc::new(parking_lot::Mutex::new(vec));
     let tweets_buffer_cloned = tweets_buffer.clone();
     println!("spawning respond_to_requests...");
@@ -223,19 +207,15 @@ async fn tweets_manager(mut tweet_receiver: Receiver<Tweet>, mut tweet_request_r
                         if guard_vec.len() < n_tweets as usize {
                             n_tweets = guard_vec.len() as i32;
                         }
-                        // sender.send(String::from("[")).await;
                         for (n, item) in guard_vec.iter().enumerate() {
-                            // sender.send(item.clone()).await;
-                            json_to_send +=item.as_str().clone();
+                            json_to_send += item.as_str().clone();
                             if n + 1 >= n_tweets as usize {
                                 break;
                             } else {
-                                // sender.send(String::from(",")).await;
                                 json_to_send += ",";
                             }
                         };
                         json_to_send += "]";
-                        // sender.send(String::from("]")).await;
                     };
                     sender.send(json_to_send).await;
                 }
@@ -256,10 +236,10 @@ async fn tweets_manager(mut tweet_receiver: Receiver<Tweet>, mut tweet_request_r
                     break;
                 }
                 Some(tweet) => {
-                    eprintln!("+t");
                     let tweet_json = serde_json::to_string(&TweetSerializable::from(tweet)).unwrap();
                     {//protects the lock
                         let mut guard_vec = tweets_buffer.lock();
+
                         guard_vec.push_back(tweet_json);
                         if guard_vec.len() > TWEETS_BUFFER_LIMIT {
                             guard_vec.pop_front();
