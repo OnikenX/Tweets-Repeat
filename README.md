@@ -1,4 +1,4 @@
-# Tweets repeater
+# Tweets Repeater
 
 This is a rust server-client application that collects tweets with a certain hashtag, it can be easily changed in the *token* file, now it is configured with #Ukraine, and repeats them to the clients.
 - The server uses the tokio lib to asynchronous collect and distribute tweets.
