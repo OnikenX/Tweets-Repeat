@@ -133,8 +133,9 @@ async fn main() {
 /// recives tweets from the twitter api
 async fn receive_tweets(tweet_sender: Sender<Tweet>) -> Result<(), Box<dyn Error>> {
     let config = common_twitter::Config::load().await;
+    let token_to_track = include_str!("token").trim();
     let mut stream = egg_mode::stream::filter()
-        .track(&["#DOGECOIN"])
+        .track(&[token_to_track])
         .filter_level(FilterLevel::Low)
         // .language(&["en", "pt", "pt-pt", "pt-br", ])
         .start(&config.token);
